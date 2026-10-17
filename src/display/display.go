@@ -2,9 +2,8 @@ package display
 
 import (
 	"image/color"
-	"machine"
 
-	"tinygo.org/x/drivers/ssd1306"
+	"tinygo.org/x/drivers"
 	"tinygo.org/x/tinydraw"
 	"tinygo.org/x/tinyfont"
 	"tinygo.org/x/tinyfont/proggy"
@@ -26,7 +25,7 @@ type Bar struct {
 }
 
 type Display struct {
-	device *ssd1306.Device
+	device drivers.Displayer // the SSD1306 on the board, or an in-memory framebuffer in the preview tool
 
 	blinkCount int
 	blinkColor color.RGBA
@@ -44,19 +43,18 @@ func New() *Display {
 	}
 }
 
-func (d *Display) Configure() {
-	machine.I2C0.Configure(machine.I2CConfig{
-		Frequency: 400 * machine.KHz,
-		SDA:       machine.SDA0_PIN,
-		SCL:       machine.SCL0_PIN,
-	})
-	d.device = ssd1306.NewI2C(machine.I2C0)
-	d.device.Configure(ssd1306.Config{
-		Address: ssd1306.Address_128_32,
-		Width:   128,
-		Height:  32,
-	})
-	d.device.ClearDisplay()
+// NewWithDevice creates a display that draws onto any drivers.Displayer.
+// Used by the PC preview tool; the firmware uses New() + Configure().
+func NewWithDevice(dev drivers.Displayer) *Display {
+	d := New()
+	d.device = dev
+	return d
+}
+
+// Device returns the underlying drawing target, so full-screen layouts
+// (see screens.go) can draw directly onto it.
+func (d *Display) Device() drivers.Displayer {
+	return d.device
 }
 
 func (d *Display) RemoveTextRow(row byte) { // TODO use reslice for efficiency
@@ -106,6 +104,12 @@ func (d *Display) SetBar(row byte, value int16, bidir bool) {
 	d.showBars = true
 	d.Bars[row].value = value
 	d.Bars[row].bidir = bidir
+}
+
+// Show draws a full-screen layout and sends it to the panel.
+func (d *Display) Show(l Layout, s *Status) {
+	l(d.device, s)
+	d.device.Display()
 }
 
 func (d *Display) Update() {

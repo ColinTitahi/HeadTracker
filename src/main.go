@@ -21,6 +21,7 @@ const (
 	BLINK_WARM_COUNT = 100    // warm up / calibration indicator
 	BLINK_PARA_COUNT = 200    // para (bluetooth) state indicator
 	TRACE_COUNT      = 1_000  // tracing to serial output, every 1 second
+	BATTERY_COUNT    = 1_000  // read battery voltage every 1 second
 )
 
 const (
@@ -45,6 +46,14 @@ type Trainer interface {
 
 var (
 	tickPeriod *time.Ticker
+)
+
+// Normal-mode screen: which layout to draw (see src/display/screens.go)
+// and the status snapshot it is drawn from.
+var (
+	screen        = display.LayoutAttitude
+	screenStatus  display.Status
+	displayFrames uint16
 )
 
 var state struct {
@@ -177,13 +186,11 @@ func main() {
 	}
 	state.address = t.Start()
 
-	// switch display to normal mode
+	// switch display to normal mode (full-screen layout from now on)
 	d.RemoveText(nil)
-	d.AddText(1, state.address)
-	if pinSelectPPM.Get() { // high means Bluetooth
-		d.SetTextBlinkFunc(d.AddText(1, "  :  :  :  :  :  "), "", func() bool { return !state.connected })
-	}
-	d.Update()
+	screenStatus.PPM = !pinSelectPPM.Get()
+	readBattery(0)
+	updateDisplay(0)
 
 	// main loop
 	iter = 0
@@ -205,7 +212,6 @@ func main() {
 		// set channels, every 20ms (~300us)
 		for i, a := range o.Angles() {
 			state.channels[i] = angleToChannel(a)
-			d.SetBar(byte(i), int16(1500-state.channels[i])/10, false)
 			chIndex := state.axisMapping[i] & 0x07 // channel index
 			chValue := state.channels[i]
 			if state.axisMapping[i]&0x10 != 0x10 { // axis disabled
@@ -221,10 +227,11 @@ func main() {
 		updateDisplay(iter + PERIOD) // slow (when display is connected, shall not clash with anything else, so offset by one period)
 
 		// handle state, period and performance varies
-		blinkMain(iter)  // very fast
-		blinkPara(iter)  // very fast
-		saveState(iter)  // very slow (~85300us, can affect sensor fusion if executed too often; as it is so slow no point to offset it)
-		printState(iter) // fast (~1500us)
+		blinkMain(iter)   // very fast
+		blinkPara(iter)   // very fast
+		readBattery(iter) // fast, once a second
+		saveState(iter)   // very slow (~85300us, can affect sensor fusion if executed too often; as it is so slow no point to offset it)
+		printState(iter)  // fast (~1500us)
 
 		iter += PERIOD
 		iter %= 60_000
@@ -249,14 +256,39 @@ func angleToChannel(angle float64) uint16 {
 
 // --- Display ----
 
-// Update display, slow operation when display is connected (~15000us)
+// Update display, slow operation when display is connected (~15000us,
+// almost all of it the I2C transfer; drawing the layout is well under 1ms)
 func updateDisplay(iter uint16) {
 	if iter%DISPLAY_COUNT != 0 {
 		return
 	}
 	pinDebugData.High()
 	defer pinDebugData.Low()
-	d.Update()
+
+	displayFrames++
+	screenStatus.Blink = (displayFrames/5)%2 == 1 // toggles every 500ms
+	screenStatus.Connected = state.connected
+	screenStatus.Address = state.address
+	screenStatus.Name = state.deviceName
+	screenStatus.Channels = state.channels
+	d.Show(screen, &screenStatus)
+}
+
+// Read battery voltage once a second, smoothed so the percentage doesn't jitter.
+func readBattery(iter uint16) {
+	if iter%BATTERY_COUNT != 0 {
+		return
+	}
+	v, err := batteryVoltage()
+	if err != nil || v < 2.5 { // no battery circuit (Nano 33 BLE) or nonsense reading
+		screenStatus.BatteryV = 0
+		return
+	}
+	if screenStatus.BatteryV <= 0 {
+		screenStatus.BatteryV = v // first reading
+		return
+	}
+	screenStatus.BatteryV += (v - screenStatus.BatteryV) * 0.2
 }
 
 // --- State ----
