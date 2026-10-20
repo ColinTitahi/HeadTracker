@@ -2,7 +2,7 @@ package display
 
 // Full-screen layouts for normal (tracking) mode.
 //
-// Each layout redraws the whole 128x32 frame from a Status snapshot.
+// Each layout redraws the whole frame from a Status snapshot.
 // They are plain Go (no TinyGo/hardware imports), so the same code runs on
 // the board and in the PC preview tool (go run ./preview).
 
@@ -19,7 +19,7 @@ import (
 
 const (
 	W = 128
-	H = 32
+	H = 32 // height used by the 128x32 layout (C); see PanelHeight for the panel in use
 )
 
 // Status is everything a layout may show.
@@ -36,101 +36,21 @@ type Status struct {
 // Layout draws a complete frame.
 type Layout func(dev drivers.Displayer, s *Status)
 
-// Layouts available for selection, in display order.
+// Layouts available for selection, with the panel height each is drawn for.
 var Layouts = []struct {
 	Name   string
+	Height int16
 	Render Layout
 }{
-	{"A-classic-plus", LayoutClassicPlus},
-	{"B-numbers", LayoutNumbers},
-	{"C-attitude", LayoutAttitude},
+	{"HUD-128x64", 64, LayoutHUD},
+	{"C-attitude-128x32", 32, LayoutAttitude},
 }
 
 // LowBatteryV is the voltage below which layouts flag a low battery.
 const LowBatteryV = 3.50
 
 // ---------------------------------------------------------------------------
-// A: Classic+ -- the original bars and address, plus axis labels, a centre
-// mark and a battery gauge. Closest to what you have today.
-
-func LayoutClassicPlus(dev drivers.Displayer, s *Status) {
-	clearFrame(dev)
-
-	// Axis bars, same scale as the original firmware (+-51 px around x=64),
-	// spaced 6 px apart so each gets a label, plus a dotted centre line.
-	// Direction: positive angle -> right (the original drew them mirrored).
-	labels := [3]string{"P", "T", "R"}
-	for i := 0; i < 3; i++ {
-		y := int16(i * 6)
-		tinyfont.WriteLine(dev, &tinyfont.TomThumb, 1, y+5, labels[i], WHITE)
-		v := int16(int(s.Channels[i])-1500) / 10
-		bar(dev, 64, y+1, v, 3)
-	}
-	for y := int16(0); y < 17; y += 2 {
-		dev.SetPixel(64, y, WHITE)
-	}
-
-	// Bottom line: address (pairing) or name (connected), battery on the right.
-	text := s.Address
-	if s.PPM {
-		text = "PPM output"
-	}
-	tinyfont.WriteLine(dev, &proggy.TinySZ8pt7b, 0, 28, text, WHITE)
-	if !s.PPM && !s.Connected && s.Blink {
-		// blink the colons while pairing, like the original
-		blank := ""
-		for _, c := range s.Address {
-			if c == ':' {
-				blank += ":"
-			} else {
-				blank += " "
-			}
-		}
-		tinyfont.WriteLine(dev, &proggy.TinySZ8pt7b, 0, 28, blank, BLACK)
-	}
-	batteryGauge(dev, 111, 20, 17, 9, s, false)
-}
-
-// ---------------------------------------------------------------------------
-// B: Numbers -- pan/tilt/roll in degrees with mini bars, plus a status line.
-
-func LayoutNumbers(dev drivers.Displayer, s *Status) {
-	clearFrame(dev)
-
-	names := [3]string{"PAN", "TILT", "ROLL"}
-	for i := 0; i < 3; i++ {
-		x0 := int16(i * 43) // three 42 px columns
-		cx := x0 + 21
-		deg := channelToDegrees(s.Channels[i])
-
-		centered(dev, &tinyfont.TomThumb, cx, 5, names[i])
-		centered(dev, &proggy.TinySZ8pt7b, cx-2, 15, signed(deg))
-		degreeSign(dev, cx+rightEdge(&proggy.TinySZ8pt7b, signed(deg))-1, 8)
-
-		// mini bar: +-90 deg maps to +-19 px
-		tinydraw.Line(dev, cx, 17, cx, 21, WHITE)
-		bar(dev, cx, 18, int16(clampInt(deg*19/90, -19, 19)), 3)
-	}
-	tinydraw.Line(dev, 0, 23, W-1, 23, WHITE)
-
-	// status line
-	switch {
-	case s.PPM:
-		tinyfont.WriteLine(dev, &tinyfont.TomThumb, 1, 30, "PPM WIRED", WHITE)
-	case s.Connected:
-		btIcon(dev, 1, 25)
-		tinyfont.WriteLine(dev, &tinyfont.TomThumb, 9, 30, upper(s.Name), WHITE)
-	default:
-		if !s.Blink {
-			btIcon(dev, 1, 25)
-		}
-		tinyfont.WriteLine(dev, &tinyfont.TomThumb, 9, 30, "PAIRING "+shortAddr(s.Address), WHITE)
-	}
-	batteryGauge(dev, W-1-batteryGaugeWidth(s), 25, 0, 7, s, true)
-}
-
-// ---------------------------------------------------------------------------
-// C: Attitude -- big state text, battery, and a 32x32 "where am I looking"
+// C (128x32 panels): Attitude -- big state text, battery, and a 32x32 "where am I looking"
 // box: dot = pan/tilt, line through it = roll.
 
 func LayoutAttitude(dev drivers.Displayer, s *Status) {

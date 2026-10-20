@@ -51,7 +51,7 @@ var (
 // Normal-mode screen: which layout to draw (see src/display/screens.go)
 // and the status snapshot it is drawn from.
 var (
-	screen        = display.LayoutAttitude
+	screen        = pickScreen()
 	screenStatus  display.Status
 	displayFrames uint16
 )
@@ -223,7 +223,9 @@ func main() {
 			t.SetChannel(int(chIndex), chValue)
 		}
 
-		// update display, every 100ms (~15000us)
+		// update display: frame drawn + top half sent every 100ms, bottom half
+		// on the following tick (~12000us each on a 128x64 panel)
+		d.FlushPending()
 		updateDisplay(iter + PERIOD) // slow (when display is connected, shall not clash with anything else, so offset by one period)
 
 		// handle state, period and performance varies
@@ -272,6 +274,14 @@ func updateDisplay(iter uint16) {
 	screenStatus.Name = state.deviceName
 	screenStatus.Channels = state.channels
 	d.Show(screen, &screenStatus)
+}
+
+// Normal-mode layout for the panel in use (display.PanelHeight).
+func pickScreen() display.Layout {
+	if display.PanelHeight == 64 {
+		return display.LayoutHUD
+	}
+	return display.LayoutAttitude
 }
 
 // Read battery voltage once a second, smoothed so the percentage doesn't jitter.

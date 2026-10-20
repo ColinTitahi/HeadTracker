@@ -9,6 +9,11 @@ import (
 	"tinygo.org/x/tinyfont/proggy"
 )
 
+// PanelHeight is the OLED in use: 64 for the 0.96" 128x64 modules (including
+// the yellow/blue two-colour ones), 32 for the 128x32 modules the upstream
+// project was designed for.
+const PanelHeight = 64
+
 var BLACK = color.RGBA{0, 0, 0, 255}
 var WHITE = color.RGBA{255, 255, 255, 255}
 
@@ -31,6 +36,8 @@ type Display struct {
 	blinkColor color.RGBA
 
 	showBars bool
+
+	pendingHalf bool // bottom half of the last Show() frame still to be sent
 
 	Texts []*Text
 	Bars  [3]Bar
@@ -106,10 +113,38 @@ func (d *Display) SetBar(row byte, value int16, bidir bool) {
 	d.Bars[row].bidir = bidir
 }
 
+// pageFlusher is implemented by the board's OLED wrapper (display_hw.go):
+// it sends only a range of 8-pixel-high pages instead of the whole buffer.
+type pageFlusher interface {
+	FlushPages(first, last uint8) error
+}
+
 // Show draws a full-screen layout and sends it to the panel.
+//
+// A full 128x64 frame takes ~25ms over 400kHz I2C, longer than the main
+// loop's 20ms tick. So on a 64-row panel Show sends the top half now and
+// FlushPending sends the bottom half on the next tick (~12ms each). The
+// frame buffer isn't touched in between, so there is no tearing.
 func (d *Display) Show(l Layout, s *Status) {
 	l(d.device, s)
+	if pf, ok := d.device.(pageFlusher); ok && PanelHeight == 64 {
+		pf.FlushPages(0, 3)
+		d.pendingHalf = true
+		return
+	}
 	d.device.Display()
+}
+
+// FlushPending sends the bottom half of the last frame, if any. Call it once
+// per main-loop tick, before anything that might call Show.
+func (d *Display) FlushPending() {
+	if !d.pendingHalf {
+		return
+	}
+	d.pendingHalf = false
+	if pf, ok := d.device.(pageFlusher); ok {
+		pf.FlushPages(4, 7)
+	}
 }
 
 func (d *Display) Update() {
